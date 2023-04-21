@@ -2,25 +2,18 @@ import numpy as np
 import cv2
 from PIL import Image, ImageDraw
 import torch 
-from torch import autocast
+from torch.cuda.amp import autocast
 import gradio as gr
 
 from segment_anything import build_sam, SamAutomaticMaskGenerator 
-from transformers import CLIPProcessor, CLIPModel
-from tqdm import tqdm
-from utils import segment_image, convert_box_xywh_to_xyxy 
 from diffusers import StableDiffusionInpaintPipeline 
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-mask_generator = SamAutomaticMaskGenerator(build_sam(checkpoint="sam_vit_h_4b8939.pth").to(device))
+mask_generator = SamAutomaticMaskGenerator(build_sam(checkpoint="/nvme/liuwenran/branches/liuwenran/dev-sdi/mmediting/resources/sam_model/sam_vit_h_4b8939.pth").to(device))
 print('load segement anything model.')
 
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-model.to(device)
-print('load clip model.')
 
 sd_pipe = StableDiffusionInpaintPipeline.from_pretrained(
     "runwayml/stable-diffusion-inpainting",
@@ -32,62 +25,66 @@ sd_pipe = sd_pipe.to(device)
 print('load sd model.')
 
 
-def image_resize(img):
+def crop_image_pillow(img, divide=8):
     width, height = img.size
-    print(width, height)
-    left = width // 2 - height // 2
-    right = width // 2 + height // 2
+    if width > 960:
+        img = img.resize((960, int(960 / width * height)))
+        width, height = img.size
+    if height > 960:
+        img = img.resize((int(960 / height * width), 960))
+        width, height = img.size
 
-    top = 0
-    bottom = height 
+    # print(width, height)
+    left = width - width // divide * divide
+    top = height - height // divide * divide
+    right = width
+    bottom = height
 
-    img = img.crop((left, top, right, bottom)) 
-    new_size = (512, 512)
-    img = img.resize(new_size) 
+    img = img.crop((left, top, right, bottom))
+
     return img
 
-@torch.no_grad()
-def retriev(elements, search_text):
-    preprocessed_images = processor(images=elements, return_tensors="pt")
-    tokenized_text = processor(text = [search_text], padding=True, return_tensors="pt")
 
-    print(preprocessed_images, tokenized_text)
+def crop_image(img, divide=8):
+    height, width, c = img.shape
+    if width > 960:
+        img = cv2.resize(img, (960, int(960 / width * height)))
+        width, height, c = img.shape
+    if height > 960:
+        img = cv2.resize(img, (int(960 / height * width), 960))
+        width, height, c = img.shape
 
-    preprocessed_images['pixel_values'] = preprocessed_images['pixel_values'].to(device) 
-    tokenized_text['input_ids'] = tokenized_text['input_ids'].to(device) 
-    tokenized_text['attention_mask'] = tokenized_text['attention_mask'].to(device) 
-
-    image_features = model.get_image_features(**preprocessed_images)
-    text_features = model.get_text_features(**tokenized_text)
-    image_features /= image_features.norm(dim=-1, keepdim=True)
-    text_features /= text_features.norm(dim=-1, keepdim=True)
-    probs = 100. * image_features @ text_features.T
-    return probs[:, 0].softmax(dim=0) 
-
-
-def get_indices_of_values_above_threshold(values, threshold):
-    return [i for i, v in enumerate(values) if v > threshold]
-
+    top = height - height // divide * divide
+    left = width - width // divide * divide
+    img = img[top:, left:, :]
+    return img
 
 
 def segment(
-    clip_threshold: float,
-    image_path: str,
-    segment_query: str,
+    # clip_threshold: float,
+    pathes: str,
+    # segment_query: str,
     text_prompt: str,
 ):
+    image_path = pathes['image']
     image = cv2.imread(image_path)
+    image = crop_image(image)
+    # import ipdb;ipdb.set_trace();
+    
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     masks = mask_generator.generate(image)
-    image = Image.open(image_path)
-    image = image_resize(image)
-    cropped_boxes = []
 
-    for mask in tqdm(masks):
-        cropped_boxes.append(segment_image(image, mask["segmentation"]).crop(convert_box_xywh_to_xyxy(mask["bbox"]))) 
+    draw_mask_path = pathes['mask']
+    draw_mask = cv2.imread(draw_mask_path)
+    draw_mask = crop_image(draw_mask)
+    gray = cv2.cvtColor(draw_mask, cv2.COLOR_BGR2GRAY)
+    draw_mask = gray > 0
 
-    scores = retriev(cropped_boxes, segment_query)
-    indices = get_indices_of_values_above_threshold(scores, clip_threshold)
+    indices = []
+    for i, mask in enumerate(masks):
+        bitwise_res = cv2.bitwise_and(mask['segmentation'].astype('uint8'), draw_mask.astype('uint8'))
+        if np.sum(bitwise_res) > 0:
+            indices.append(i)
 
     segmentation_masks = []
 
@@ -96,41 +93,69 @@ def segment(
         segmentation_masks.append(segmentation_mask_image)
 
     original_image = Image.open(image_path)
-    original_image = image_resize(original_image)
-    # overlay_image = Image.new('RGBA', image.size, (0, 0, 0, 255)) #0))
-    # overlay_color = (255, 255, 255, 0) #0, 0, 0, 200)
-    overlay_image = Image.new('RGBA', image.size, (0, 0, 0, 255))
+    original_image = crop_image_pillow(original_image)
+
+    overlay_image = Image.new('RGBA', original_image.size, (0, 0, 0, 255))
     overlay_color = (255, 255, 255, 0)
 
     draw = ImageDraw.Draw(overlay_image)
     for segmentation_mask_image in segmentation_masks:
         draw.bitmap((0, 0), segmentation_mask_image, fill=overlay_color)
 
-    # return Image.alpha_composite(original_image.convert('RGBA'), overlay_image) 
     mask_image = overlay_image.convert("RGB") 
     
-    #with autocast("cuda"):
-    gen_image = sd_pipe(prompt=text_prompt, image=original_image, mask_image=mask_image).images[0] 
+    gen_image = sd_pipe(prompt=text_prompt,
+                        image=original_image,
+                        mask_image=mask_image,
+                        width=original_image.size[0],
+                        height=original_image.size[1]).images[0] 
 
-    #target = Image.new("RGB", (512 * 2, 512))
-    #target.paste(mask_image, (0, 0)) 
-    #target.paste(gen_image, (512, 0)) 
     return mask_image, gen_image 
 
 
+block = gr.Blocks().queue()
+with block:
+    with gr.Row():
+        gr.Markdown('## Inpainting with Stable Diffusin and SAM')
+    with gr.Row():
+        with gr.Column():
+            image_input = gr.Image(type="filepath", tool='sketch')
+            prompt = gr.Textbox(label='Prompt')
+            run_button = gr.Button(label='Run')
+            # with gr.Accordion('Advanced options', open=False):
+            #     a_prompt = gr.Textbox(
+            #         label='Added Prompt',
+            #         value='best quality, extremely detailed')
+            #     n_prompt = gr.Textbox(
+            #         label='Negative Prompt',
+            #         value='longbody, lowres, bad anatomy, bad hands, ' +
+            #         'missing fingers, extra digit, fewer digits, '
+            #         'cropped, worst quality, low quality')
+            #     controlnet_conditioning_scale = gr.Slider(
+            #         label='Control Weight',
+            #         minimum=0.0,
+            #         maximum=2.0,
+            #         value=0.7,
+            #         step=0.01)
+            #     width = gr.Slider(
+            #         label='Image Width',
+            #         minimum=256,
+            #         maximum=768,
+            #         value=512,
+            #         step=64)
+            #     height = gr.Slider(
+            #         label='Image Width',
+            #         minimum=256,
+            #         maximum=768,
+            #         value=512,
+            #         step=64)
 
-demo = gr.Interface(
-    fn=segment,
-    inputs=[
-        gr.Slider(0, 1, value=0.05, label="clip_threshold"),
-        gr.Image(type="filepath"),
-        "text",
-        "text",
-    ],
-    outputs=["image", "image"],
-    allow_flagging="never",
-    title="Segment Anything Model with Stable Diffusion Model",
-)
+        with gr.Column():
+            mask_out = gr.Image(label='Result', elem_id='mask-output')
+            image_out = gr.Image(label='Result', elem_id='image-output')
 
-if __name__ == "__main__":
-    demo.launch(enable_queue=True, server_name='0.0.0.0',server_port=8413)
+    ips = [image_input, prompt]
+    run_button.click(fn=segment, inputs=ips, outputs=[mask_out, image_out])
+
+block.launch(server_name='0.0.0.0')
+
