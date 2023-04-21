@@ -34,7 +34,6 @@ def crop_image_pillow(img, divide=8):
         img = img.resize((int(960 / height * width), 960))
         width, height = img.size
 
-    # print(width, height)
     left = width - width // divide * divide
     top = height - height // divide * divide
     right = width
@@ -61,36 +60,38 @@ def crop_image(img, divide=8):
 
 
 def segment(
-    # clip_threshold: float,
     pathes: str,
-    # segment_query: str,
     text_prompt: str,
+    use_drawed_mask: bool
 ):
-    image_path = pathes['image']
-    image = cv2.imread(image_path)
-    image = crop_image(image)
-    # import ipdb;ipdb.set_trace();
-    
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    masks = mask_generator.generate(image)
-
     draw_mask_path = pathes['mask']
+    image_path = pathes['image']
+
     draw_mask = cv2.imread(draw_mask_path)
     draw_mask = crop_image(draw_mask)
     gray = cv2.cvtColor(draw_mask, cv2.COLOR_BGR2GRAY)
     draw_mask = gray > 0
 
-    indices = []
-    for i, mask in enumerate(masks):
-        bitwise_res = cv2.bitwise_and(mask['segmentation'].astype('uint8'), draw_mask.astype('uint8'))
-        if np.sum(bitwise_res) > 0:
-            indices.append(i)
-
     segmentation_masks = []
-
-    for seg_idx in indices:
-        segmentation_mask_image = Image.fromarray(masks[seg_idx]["segmentation"].astype('uint8') * 255)
+    if use_drawed_mask:
+        segmentation_mask_image = Image.fromarray(draw_mask.astype('uint8') * 255)
         segmentation_masks.append(segmentation_mask_image)
+    else:
+        image = cv2.imread(image_path)
+        image = crop_image(image)
+        
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        masks = mask_generator.generate(image)
+
+        indices = []
+        for i, mask in enumerate(masks):
+            bitwise_res = cv2.bitwise_and(mask['segmentation'].astype('uint8'), draw_mask.astype('uint8'))
+            if np.sum(bitwise_res) > 0:
+                indices.append(i)
+
+        for seg_idx in indices:
+            segmentation_mask_image = Image.fromarray(masks[seg_idx]["segmentation"].astype('uint8') * 255)
+            segmentation_masks.append(segmentation_mask_image)
 
     original_image = Image.open(image_path)
     original_image = crop_image_pillow(original_image)
@@ -102,7 +103,17 @@ def segment(
     for segmentation_mask_image in segmentation_masks:
         draw.bitmap((0, 0), segmentation_mask_image, fill=overlay_color)
 
-    mask_image = overlay_image.convert("RGB") 
+    mask_image = overlay_image.convert("RGB")
+
+    mask_image_np = np.asarray(mask_image)
+    mask_image_gray = cv2.cvtColor(mask_image_np, cv2.COLOR_BGR2GRAY)
+    mask_image_binary = mask_image_gray > 0
+    mask_image_binary = 1 - mask_image_binary.astype('uint8')
+    nb = np.expand_dims(mask_image_binary, axis=2)
+    nm = np.repeat(nb, repeats=3, axis=2)
+    original_image_np = np.asarray(original_image)
+    original_image_masked = original_image_np * nm
+    original_image_masked = Image.fromarray(original_image_masked)
     
     gen_image = sd_pipe(prompt=text_prompt,
                         image=original_image,
@@ -110,7 +121,7 @@ def segment(
                         width=original_image.size[0],
                         height=original_image.size[1]).images[0] 
 
-    return mask_image, gen_image 
+    return mask_image, original_image_masked, gen_image 
 
 
 block = gr.Blocks().queue()
@@ -121,6 +132,7 @@ with block:
         with gr.Column():
             image_input = gr.Image(type="filepath", tool='sketch')
             prompt = gr.Textbox(label='Prompt')
+            use_drawed_mask = gr.Checkbox(label='Use drawed mask.', value=False)
             run_button = gr.Button(label='Run')
             # with gr.Accordion('Advanced options', open=False):
             #     a_prompt = gr.Textbox(
@@ -151,11 +163,12 @@ with block:
             #         step=64)
 
         with gr.Column():
-            mask_out = gr.Image(label='Result', elem_id='mask-output')
-            image_out = gr.Image(label='Result', elem_id='image-output')
+            mask_out = gr.Image(label='Mask Result', elem_id='mask-output')
+            masked_image = gr.Image(label='Masked image Result', elem_id='masked-img-output')
+            image_out = gr.Image(label='Inpainting Result', elem_id='inpainting-output')
 
-    ips = [image_input, prompt]
-    run_button.click(fn=segment, inputs=ips, outputs=[mask_out, image_out])
+    ips = [image_input, prompt, use_drawed_mask]
+    run_button.click(fn=segment, inputs=ips, outputs=[mask_out, masked_image, image_out])
 
 block.launch(server_name='0.0.0.0')
 
