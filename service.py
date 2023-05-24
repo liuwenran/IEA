@@ -10,14 +10,18 @@ from diffusers import StableDiffusionInpaintPipeline
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-mask_generator = SamAutomaticMaskGenerator(build_sam(checkpoint="/nvme/liuwenran/branches/liuwenran/dev-sdi/mmediting/resources/sam_model/sam_vit_h_4b8939.pth").to(device))
+mask_generator = SamAutomaticMaskGenerator(build_sam(checkpoint="/home/liuwenran/models/sam/sam_vit_h_4b8939.pth").to(device))
 print('load segement anything model.')
 
+# model = "stabilityai/stable-diffusion-2-inpainting"
+# model = '/home/liuwenran/models/models--runwayml--stable-diffusion-inpainting/snapshots/afeee10def38be19995784bcc811882409d066e5'
+# model = '/home/liuwenran/repos/diffusers/resources/inpainting_ckpts/DreamShaper_5'
+model = '/home/liuwenran/repos/diffusers/resources/inpainting_ckpts/realistic_v2'
 
 sd_pipe = StableDiffusionInpaintPipeline.from_pretrained(
-    "runwayml/stable-diffusion-inpainting",
+    model,
     safety_checker=None,
-    revision="fp16",
+    # revision="fp16",
     torch_dtype=torch.float16,
 )
 sd_pipe = sd_pipe.to(device)
@@ -31,6 +35,8 @@ origin_image_path = None
 global incremental_mask
 incremental_mask = None
 
+global count
+count = 0
 
 def crop_image_pillow(img, divide=8):
     width, height = img.size
@@ -68,6 +74,7 @@ def crop_image(img, divide=8):
 
 def segment(
     text_prompt: str,
+    save_path: str,
 ):
     global origin_image_path
     original_image = Image.open(origin_image_path)
@@ -84,6 +91,10 @@ def segment(
                         mask_image=output_draw_mask,
                         width=original_image.size[0],
                         height=original_image.size[1]).images[0]
+    
+    global count
+    gen_image.save('results/' + save_path + '/' + str(count) + '.jpg')
+    count += 1
 
     return gen_image
 
@@ -93,6 +104,8 @@ def clear_cache():
     origin_image_path = None
     global incremental_mask
     incremental_mask = None
+    global count
+    count = 0
 
     return None, None, None, None
 
@@ -170,6 +183,15 @@ with block:
             mask_out = gr.Image(label='Mask Result', elem_id='mask-output').style(height=524)
 
     with gr.Row():
+        model_name = gr.Dropdown(
+            ["stabilityai/stable-diffusion-2-inpainting", 
+             '/home/liuwenran/models/models--runwayml--stable-diffusion-inpainting/snapshots/afeee10def38be19995784bcc811882409d066e5',
+             '/home/liuwenran/repos/diffusers/resources/inpainting_ckpts/DreamShaper_5'
+            ], label="Model name", info="add model"
+        ),
+    with gr.Row():
+        save_path = gr.Textbox(label='Save Path')
+    with gr.Row():
         clear_btn = gr.Button(value='Clear Cache', label='Clear Cache')
 
     preview_btn_inpus = [image_input, use_drawed_mask]
@@ -178,7 +200,7 @@ with block:
                          inputs=preview_btn_inpus,
                          outputs=preview_btn_outputs)
 
-    run_button.click(fn=segment, inputs=[prompt], outputs=[image_out])
+    run_button.click(fn=segment, inputs=[prompt, save_path], outputs=[image_out])
 
     clear_btn.click(fn=clear_cache, outputs=[preview_image, mask_out, image_input, image_out])
 
