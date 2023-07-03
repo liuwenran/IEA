@@ -3,15 +3,26 @@ import cv2
 from PIL import Image
 import torch
 import gradio as gr
+import time
 
-from segment_anything import build_sam, SamAutomaticMaskGenerator
 from diffusers import StableDiffusionInpaintPipeline
+
+from mobile_sam import sam_model_registry, SamAutomaticMaskGenerator
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-mask_generator = SamAutomaticMaskGenerator(build_sam(checkpoint="/home/liuwenran/models/sam/sam_vit_h_4b8939.pth").to(device))
-print('load segement anything model.')
+# from segment_anything import build_sam, SamAutomaticMaskGenerator
+# mask_generator = SamAutomaticMaskGenerator(build_sam(checkpoint="/home/liuwenran/models/sam/sam_vit_h_4b8939.pth").to(device))
+# print('load segement anything model.')
+
+model_type = "vit_t"
+sam_checkpoint = "./weights/mobile_sam.pt"
+mobile_sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+mobile_sam.to(device=device)
+mobile_sam.eval()
+mask_generator = SamAutomaticMaskGenerator(mobile_sam)
+
 
 # model = "stabilityai/stable-diffusion-2-inpainting"
 # model = '/home/liuwenran/models/models--runwayml--stable-diffusion-inpainting/snapshots/afeee10def38be19995784bcc811882409d066e5'
@@ -129,7 +140,10 @@ def preview(pathes, use_drawed_mask):
         image = crop_image(image)
 
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        start = time.time()
         masks = mask_generator.generate(image)
+        end = time.time()
+        print('used time ' + str(end - start))
 
         indices = []
         for i, mask in enumerate(masks):
