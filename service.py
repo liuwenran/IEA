@@ -51,12 +51,12 @@ count = 0
 
 def crop_image_pillow(img, divide=8):
     width, height = img.size
-    if width > 960:
-        img = img.resize((960, int(960 / width * height)))
-        width, height = img.size
-    if height > 960:
-        img = img.resize((int(960 / height * width), 960))
-        width, height = img.size
+    # if width > 960:
+    #     img = img.resize((960, int(960 / width * height)))
+    #     width, height = img.size
+    # if height > 960:
+    #     img = img.resize((int(960 / height * width), 960))
+    #     width, height = img.size
 
     left = width - width // divide * divide
     top = height - height // divide * divide
@@ -70,12 +70,12 @@ def crop_image_pillow(img, divide=8):
 
 def crop_image(img, divide=8):
     height, width, c = img.shape
-    if width > 960:
-        img = cv2.resize(img, (960, int(960 / width * height)))
-        height, width, c = img.shape
-    if height > 960:
-        img = cv2.resize(img, (int(960 / height * width), 960))
-        height, width, c = img.shape
+    # if width > 960:
+    #     img = cv2.resize(img, (960, int(960 / width * height)))
+    #     height, width, c = img.shape
+    # if height > 960:
+    #     img = cv2.resize(img, (int(960 / height * width), 960))
+    #     height, width, c = img.shape
 
     top = height - height // divide * divide
     left = width - width // divide * divide
